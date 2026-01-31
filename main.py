@@ -8,6 +8,11 @@ import uuid
 
 app = FastAPI(title="Compass CX Orchestrator", version="1.0")
 
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+
 # Allow UI (Next.js) to call API
 app.add_middleware(
     CORSMiddleware,
