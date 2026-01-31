@@ -1,0 +1,49 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Run Compass API",
+      "type": "shell",
+      "command": "powershell",
+      "options": {
+        "cwd": "${workspaceFolder:compass-api}"
+      },
+      "args": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        ".\\.venv\\Scripts\\Activate.ps1; uvicorn main:app --reload --host 0.0.0.0 --port 8000"
+      ],
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      }
+    },
+    {
+      "label": "Run Compass UI",
+      "type": "shell",
+      "command": "powershell",
+      "options": {
+        "cwd": "${workspaceFolder:compass-ui}"
+      },
+      "args": [
+        "-Command",
+        "npm run dev"
+      ],
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      }
+    },
+    {
+      "label": "Run Compass (API + UI)",
+      "dependsOn": [
+        "Run Compass API",
+        "Run Compass UI"
+      ],
+      "dependsOrder": "parallel"
+    }
+  ]
+}
