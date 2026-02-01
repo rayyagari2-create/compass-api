@@ -18,7 +18,7 @@ app.add_middleware(
         "http://localhost:3001",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:3001",
-        "https://compass-ui-blush.vercel.app"
+        "https://compass-ui-blush.vercel.app" ,
             ],
     allow_credentials=False,
     allow_methods=["*"],
