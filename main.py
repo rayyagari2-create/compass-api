@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple
 import re
 import time
 import uuid
@@ -9,22 +9,17 @@ import uuid
 app = FastAPI(title="Compass CX Orchestrator", version="1.0")
 
 # -----------------------------
-# CORS (Fix for Vercel + local)
+# CORS (add your Vercel URL too)
 # -----------------------------
-ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://localhost:3001",
-    "http://127.0.0.1:3000",
-    "http://127.0.0.1:3001",
-    # ✅ your Vercel production domain
-    "https://compass-ui-blush.vercel.app",
-]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    # ✅ allow all *.vercel.app preview deploys too
-    allow_origin_regex=r"^https:\/\/.*\.vercel\.app$",
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+        "https://compass-ui-blush.vercel.app"
+            ],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -34,9 +29,8 @@ app.add_middleware(
 def health():
     return {"ok": True}
 
-
 # -----------------------------
-# Request Models
+# Models
 # -----------------------------
 class OrchestrateRequest(BaseModel):
     session_id: str
@@ -60,12 +54,7 @@ def get_state(session_id: str) -> Dict[str, Any]:
     if session_id not in _DEMO_STATE:
         _DEMO_STATE[session_id] = {
             "balances": {"checking": 2450.12, "savings": 8900.00},
-            "pending_action": None,
-            "memory": {
-                "last_domain": None,
-                "last_intent": None,
-                "last_entities": {},
-            },
+            "pending_action": None,  # transfer wizard state lives here
         }
     return _DEMO_STATE[session_id]
 
@@ -73,9 +62,18 @@ def now_ts() -> int:
     return int(time.time())
 
 # -----------------------------
-# NLP: amount + direction
+# NLP helpers
 # -----------------------------
 AMOUNT_RE = re.compile(r"(\$?\s*\d[\d,]*(?:\.\d{1,2})?)", re.IGNORECASE)
+
+# Examples handled:
+# "transfer $25 from savings to checking"
+# "transfer 25 savings to checking"
+# "from checking to savings"
+# "savings to checking"
+ACCT = r"(checking|savings)"
+DIR_RE_1 = re.compile(rf"from\s+{ACCT}\s+to\s+{ACCT}", re.IGNORECASE)
+DIR_RE_2 = re.compile(rf"{ACCT}\s+to\s+{ACCT}", re.IGNORECASE)
 
 def parse_amount(text: str) -> Optional[float]:
     m = AMOUNT_RE.search(text or "")
@@ -87,394 +85,405 @@ def parse_amount(text: str) -> Optional[float]:
     except:
         return None
 
-def parse_transfer_direction(text: str) -> Dict[str, str]:
-    """
-    Default: checking -> savings
-    If user says "from savings to checking", respect it.
-    """
+def parse_direction(text: str) -> Tuple[Optional[str], Optional[str]]:
     t = (text or "").lower()
+    m = DIR_RE_1.search(t)
+    if m:
+        # "from X to Y"
+        parts = re.findall(ACCT, m.group(0), flags=re.IGNORECASE)
+        if len(parts) == 2:
+            return parts[0].lower(), parts[1].lower()
 
-    # Strong patterns: "from X to Y"
-    if "from savings" in t and "to checking" in t:
-        return {"from": "savings", "to": "checking"}
-    if "from checking" in t and "to savings" in t:
-        return {"from": "checking", "to": "savings"}
+    m = DIR_RE_2.search(t)
+    if m:
+        # "X to Y"
+        parts = re.findall(ACCT, m.group(0), flags=re.IGNORECASE)
+        if len(parts) == 2:
+            return parts[0].lower(), parts[1].lower()
 
-    # weaker cues
-    if "to checking" in t:
-        return {"from": "savings", "to": "checking"}
-    if "to savings" in t:
-        return {"from": "checking", "to": "savings"}
+    return None, None
 
-    return {"from": "checking", "to": "savings"}
-
-# -----------------------------
-# Routing (domains/intents)
-# -----------------------------
 def route_intent(text: str) -> str:
     t = (text or "").lower().strip()
-
-    # Insights / home
-    if t in ("insights", "show insights", "my insights"):
-        return "home_insights"
-
-    # Banking
-    if "spend" in t or "spending" in t or "analysis" in t:
-        return "bank_spend_analysis"
     if "recurring" in t or "subscription" in t:
         return "bank_recurring_charges"
-    if "account" in t and ("summary" in t or "balance" in t or "balances" in t):
+    if "spend" in t and ("analysis" in t or "insight" in t):
+        return "bank_spend_analysis"
+    if "account" in t and ("summary" in t or "balance" in t):
         return "bank_account_summary"
-    if "transfer" in t or "send" in t or "zelle" in t or "move money" in t or "transfer money" in t:
+    if "transfer" in t or "send" in t or "move money" in t:
         return "bank_transfer"
-
-    # Travel
-    if "travel" in t or "upcoming trip" in t or "upcoming travel" in t or "points" in t:
-        return "travel_upcoming"
-
-    # Assets
-    if "cd" in t or "maturity" in t or "certificate of deposit" in t:
-        return "assets_cd_maturity"
-
-    # Agent handoff
-    if "agent" in t or "representative" in t or "specialist" in t or "talk to a" in t:
-        return "handoff_agent"
-
+    # also accept “transfer money”
+    if "transfer money" in t:
+        return "bank_transfer"
     return "unknown"
 
 # -----------------------------
-# PIP (Policy / Identity / Permissions)
+# Policy (PIP-lite)
 # -----------------------------
-def pip_decision(intent: str, entities: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, Any]:
+def policy_check(intent: str, entities: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, Any]:
     """
-    - Missing amount for transfers => allow (clarify), NOT blocked
-    - Insufficient funds check happens BEFORE confirmation card
+    Demo PIP gate:
+    - Missing amount should NOT block (we clarify).
+    - Insufficient funds should block BEFORE confirmation.
     """
-    if intent in ("unknown", "", None):
-        return {"allow": True, "risk": "low", "reason": "No match"}  # let orchestrator respond with helpful fallback
+    if intent != "bank_transfer":
+        return {"allow": True, "risk": "low", "reason": "Allowed"}
 
-    if intent == "bank_transfer":
-        amt = entities.get("amount")
-        # Missing amount => clarification path (allowed)
-        if amt is None:
-            return {"allow": True, "risk": "low", "reason": "Needs amount clarification"}
+    amount = entities.get("amount")
+    from_acct = entities.get("from_account")
 
-        amt = float(amt)
-        if amt <= 0:
-            return {"allow": False, "risk": "low", "reason": "Transfer amount must be greater than $0."}
+    # If no amount yet, don’t block — we'll ask a question in the flow.
+    if amount is None:
+        return {"allow": True, "risk": "medium", "reason": "Needs amount"}
 
-        # direction-aware funds check
-        frm = entities.get("from_account", "checking")
-        balances = state["balances"]
-        if balances.get(frm, 0) < amt:
+    try:
+        amount = float(amount)
+    except:
+        return {"allow": False, "risk": "low", "reason": "Invalid transfer amount."}
+
+    if amount <= 0:
+        return {"allow": False, "risk": "low", "reason": "Transfer amount must be > 0."}
+
+    # If we know the source account, enforce insufficient funds early
+    if from_acct in ("checking", "savings"):
+        bal = float(state["balances"].get(from_acct, 0))
+        if amount > bal:
             return {
                 "allow": False,
                 "risk": "low",
-                "reason": f"Insufficient funds in {frm.title()} (demo). Available: ${balances.get(frm,0):.2f}"
+                "reason": f"Insufficient funds in {from_acct.title()} (demo). Available: ${bal:.2f}",
             }
 
-        # Optional demo cap rule
-        if amt >= 5000:
-            return {"allow": False, "risk": "high", "reason": "Transfers above $5,000 require additional verification (demo)."}
+    # Demo step-up example
+    if amount >= 5000:
+        return {
+            "allow": False,
+            "risk": "high",
+            "reason": "For safety, transfers above $5,000 require additional verification (demo).",
+        }
 
-        return {"allow": True, "risk": "medium", "reason": "Requires confirmation"}
-
-    return {"allow": True, "risk": "low", "reason": "Allowed"}
+    return {"allow": True, "risk": "medium", "reason": "Requires confirmation"}
 
 # -----------------------------
-# Card helpers
+# Card builders
 # -----------------------------
-def make_card(title: str, subtitle: str = "", body: str = "", actions=None):
+def card_transfer_choose_direction() -> Dict[str, Any]:
     return {
-        "title": title,
-        "subtitle": subtitle,
-        "body": body,
-        "actions": actions or [],
+        "title": "Transfer money between your accounts",
+        "subtitle": "Choose a direction (demo)",
+        "body": "Where do you want to move money?",
+        "actions": [
+            {
+                "label": "From Checking → Savings",
+                "action_name": "transfer_set_direction",
+                "params": {"from_account": "checking", "to_account": "savings"},
+            },
+            {
+                "label": "From Savings → Checking",
+                "action_name": "transfer_set_direction",
+                "params": {"from_account": "savings", "to_account": "checking"},
+            },
+        ],
     }
 
-def response(session_id: str, messages, card, debug):
+def card_transfer_ask_amount(from_acct: str, to_acct: str) -> Dict[str, Any]:
     return {
-        "session_id": session_id,
-        "messages": messages,
-        "card": card,
-        "debug": debug,
+        "title": "Transfer amount",
+        "subtitle": f"{from_acct.title()} → {to_acct.title()} (demo)",
+        "body": "How much would you like to transfer?\nExample: “$25” or “transfer $25”.",
+        "actions": [],
+    }
+
+def card_transfer_confirm(from_acct: str, to_acct: str, amt: float, action_id: str) -> Dict[str, Any]:
+    return {
+        "title": "Confirm transfer",
+        "subtitle": f"{from_acct.title()} → {to_acct.title()} (demo-safe)",
+        "body": (
+            f"Please confirm:\n"
+            f"- Amount: ${amt:.2f}\n"
+            f"- From: {from_acct.title()} (demo)\n"
+            f"- To: {to_acct.title()} (demo)\n\n"
+            f"No real money will move in this demo."
+        ),
+        "actions": [
+            {
+                "label": "Confirm transfer",
+                "action_name": "confirm_transfer",
+                "params": {"action_id": action_id},
+            },
+            {
+                "label": "Cancel",
+                "action_name": "cancel_transfer",
+                "params": {"action_id": action_id},
+            },
+        ],
     }
 
 # -----------------------------
-# API: Orchestrate
+# /orchestrate
 # -----------------------------
 @app.post("/orchestrate")
 def orchestrate(req: OrchestrateRequest):
     state = get_state(req.session_id)
     text = (req.text or "").strip()
-
     intent = route_intent(text)
-    entities: Dict[str, Any] = {}
 
-    # Extract entities where relevant
-    if intent == "bank_transfer":
+    # ---- If a transfer wizard is mid-flight, allow user to just type the amount ----
+    pending = state.get("pending_action")
+    if pending and pending.get("type") == "transfer" and pending.get("stage") == "awaiting_amount":
         amt = parse_amount(text)
-        if amt is not None:
-            entities["amount"] = amt
-        direction = parse_transfer_direction(text)
-        entities["from_account"] = direction["from"]
-        entities["to_account"] = direction["to"]
+        if amt is None:
+            # still awaiting amount; keep asking nicely
+            return {
+                "session_id": req.session_id,
+                "messages": [{"role": "assistant", "content": "How much would you like to transfer?"}],
+                "card": card_transfer_ask_amount(pending["from_account"], pending["to_account"]),
+                "debug": {"intent": "bank_transfer", "entities": {}, "policy": {"allow": True, "risk": "medium", "reason": "Needs amount"}, "ts": now_ts()},
+            }
 
-    # Remember last routing (agentic “memory-lite”)
-    state["memory"]["last_intent"] = intent
-    state["memory"]["last_entities"] = entities
-
-    policy = pip_decision(intent, entities, state)
-
-    # If blocked: show blocked card
-    if not policy["allow"]:
-        return response(
-            req.session_id,
-            [{"role": "assistant", "content": f"{policy['reason']}"}],
-            make_card("Action blocked", "Policy / safety check", policy["reason"], []),
-            {"intent": intent, "entities": entities, "policy": policy, "ts": now_ts()},
-        )
-
-    # ---- Handlers ----
-
-    if intent == "home_insights":
-        body = (
-            "New insights — tap a card to view details.\n\n"
-            "• Duplicate Charges — You may have been charged more than once for the same item.\n"
-            "• Spend Path — See your current monthly spending (demo).\n"
-            "• Subscriptions & Recurring Charges — 3 charges may be due this week.\n"
-            "• Quick Transfer — Send money with confirmation (demo-safe)."
-        )
-        return response(
-            req.session_id,
-            [{"role": "assistant", "content": "Loaded your insights (demo)."}],
-            make_card("Insights", "Highlights (demo)", body, []),
-            {"intent": intent, "entities": entities, "policy": policy, "ts": now_ts()},
-        )
-
-    if intent == "bank_spend_analysis":
-        # Keep it simple + demo-friendly; your UI can render charts from debug later
-        body = (
-            "Top categories (demo):\n"
-            "- Groceries: $420\n"
-            "- Dining: $260\n"
-            "- Gas: $110\n"
-            "- Subscriptions: $35\n\n"
-            "Suggestion (demo): Dining is trending higher — consider setting a weekly cap."
-        )
-        debug = {
-            "intent": intent,
-            "entities": entities,
-            "policy": policy,
-            "ts": now_ts(),
-            # Chart payload (optional: your UI can read this and render charts)
-            "charts": {
-                "pie": [
-                    {"name": "Groceries", "value": 420},
-                    {"name": "Dining", "value": 260},
-                    {"name": "Gas", "value": 110},
-                    {"name": "Subscriptions", "value": 35},
-                ],
-                "trend": [
-                    {"day": "W1", "value": 820},
-                    {"day": "W2", "value": 910},
-                    {"day": "W3", "value": 980},
-                    {"day": "W4", "value": 1045},
-                ],
-            },
+        entities = {
+            "amount": float(amt),
+            "from_account": pending["from_account"],
+            "to_account": pending["to_account"],
         }
-        return response(
-            req.session_id,
-            [{"role": "assistant", "content": "Here’s a quick spend analysis (demo)."}],
-            make_card("Spend Analysis", "This month vs last month (demo)", body, []),
-            debug,
-        )
+        policy = policy_check("bank_transfer", entities, state)
+        if not policy["allow"]:
+            # Cancel pending wizard on hard stop
+            state["pending_action"] = None
+            return {
+                "session_id": req.session_id,
+                "messages": [{"role": "assistant", "content": f"{policy['reason']}"}],
+                "card": {"title": "Transfer blocked", "subtitle": "Policy check", "body": policy["reason"], "actions": []},
+                "debug": {"intent": "bank_transfer", "entities": entities, "policy": policy, "ts": now_ts()},
+            }
 
+        action_id = str(uuid.uuid4())
+        state["pending_action"] = {
+            "id": action_id,
+            "type": "transfer",
+            "stage": "awaiting_confirm",
+            "from_account": pending["from_account"],
+            "to_account": pending["to_account"],
+            "amount": float(amt),
+        }
+        return {
+            "session_id": req.session_id,
+            "messages": [{"role": "assistant", "content": "For your safety, please confirm this transfer (demo)."}],
+            "card": card_transfer_confirm(pending["from_account"], pending["to_account"], float(amt), action_id),
+            "debug": {"intent": "bank_transfer", "entities": entities, "policy": policy, "ts": now_ts()},
+        }
+
+    # ---- Normal intents ----
     if intent == "bank_recurring_charges":
-        return response(
-            req.session_id,
-            [{"role": "assistant", "content": "Here are your upcoming subscriptions (demo)."}],
-            make_card(
-                "Subscriptions & Recurring Charges",
-                "Upcoming charges (demo)",
-                "Spotify — $11.99 • due in 3 days\n"
-                "Netflix — $15.49 • due in 5 days\n"
-                "iCloud — $2.99 • due in 6 days\n\n"
-                "Demo subscriptions only.",
-                [],
-            ),
-            {"intent": intent, "entities": entities, "policy": policy, "ts": now_ts()},
-        )
+        return {
+            "session_id": req.session_id,
+            "messages": [{"role": "assistant", "content": "Here are your upcoming subscriptions (demo)."}],
+            "card": {
+                "title": "Subscriptions & Recurring Charges",
+                "subtitle": "Upcoming charges (demo)",
+                "body": "Spotify — $11.99 • due in 3 days\nNetflix — $15.49 • due in 5 days\niCloud — $2.99 • due in 6 days\n\nDemo subscriptions only.",
+                "actions": [],
+            },
+            "debug": {"intent": intent, "entities": {}, "policy": {"allow": True, "risk": "low", "reason": "Allowed"}, "ts": now_ts()},
+        }
 
     if intent == "bank_account_summary":
         b = state["balances"]
-        return response(
-            req.session_id,
-            [{"role": "assistant", "content": "Here’s your balances overview (demo)."}],
-            make_card(
-                "Account Summary",
-                "Balances overview (demo)",
-                f"Checking: ${b['checking']:.2f}\nSavings:  ${b['savings']:.2f}",
-                [],
-            ),
-            {"intent": intent, "entities": entities, "policy": policy, "ts": now_ts()},
-        )
+        return {
+            "session_id": req.session_id,
+            "messages": [{"role": "assistant", "content": "Here’s your balances overview (demo)."}],
+            "card": {
+                "title": "Account Summary",
+                "subtitle": "Balances overview (demo)",
+                "body": f"Checking: ${b['checking']:.2f}\nSavings: ${b['savings']:.2f}",
+                "actions": [],
+            },
+            "debug": {"intent": intent, "entities": {}, "policy": {"allow": True, "risk": "low", "reason": "Allowed"}, "ts": now_ts()},
+        }
+
+    if intent == "bank_spend_analysis":
+        # Keep whatever you already had; leaving simple here
+        charts = {
+            "pie": [{"name": "Groceries", "value": 420}, {"name": "Dining", "value": 260}, {"name": "Gas", "value": 110}, {"name": "Subscriptions", "value": 35}],
+            "trend": [{"day": "W1", "value": 820}, {"day": "W2", "value": 910}, {"day": "W3", "value": 980}, {"day": "W4", "value": 1045}],
+        }
+        return {
+            "session_id": req.session_id,
+            "messages": [{"role": "assistant", "content": "Here’s a quick spend analysis (demo)."}],
+            "card": {
+                "title": "Spend Analysis",
+                "subtitle": "This month vs last month (demo)",
+                "body": "Top categories (demo):\n- Groceries: $420\n- Dining: $260\n- Gas: $110\n- Subscriptions: $35\n\nSuggestion (demo): Dining is trending higher — consider setting a weekly cap.",
+                "actions": [],
+            },
+            "debug": {"intent": intent, "entities": {}, "policy": {"allow": True, "risk": "low", "reason": "Allowed"}, "charts": charts, "ts": now_ts()},
+        }
 
     if intent == "bank_transfer":
-        amt = entities.get("amount")
+        # Parse explicit direction/amount if user gave it
+        from_acct, to_acct = parse_direction(text)
+        amt = parse_amount(text)
 
-        # Clarify amount (NOT blocked)
-        if amt is None:
-            return response(
-                req.session_id,
-                [{"role": "assistant", "content": "How much would you like to transfer?"}],
-                make_card("Transfer Money", "Amount needed", "Example: “transfer $25 from savings to checking”", []),
-                {"intent": intent, "entities": entities, "policy": policy, "ts": now_ts()},
-            )
+        # Case 1: user just says “transfer money” OR “transfer” without enough info → show direction options
+        if (from_acct is None or to_acct is None) and amt is None:
+            # Start wizard
+            state["pending_action"] = {"type": "transfer", "stage": "awaiting_direction"}
+            return {
+                "session_id": req.session_id,
+                "messages": [{"role": "assistant", "content": "Sure — where do you want to transfer money from and to?"}],
+                "card": card_transfer_choose_direction(),
+                "debug": {"intent": intent, "entities": {}, "policy": {"allow": True, "risk": "medium", "reason": "Needs direction"}, "ts": now_ts()},
+            }
 
-        frm = entities.get("from_account", "checking")
-        to = entities.get("to_account", "savings")
+        # Case 2: amount provided but direction missing → ask direction (still show two options)
+        if (from_acct is None or to_acct is None) and amt is not None:
+            state["pending_action"] = {"type": "transfer", "stage": "awaiting_direction", "amount_hint": float(amt)}
+            return {
+                "session_id": req.session_id,
+                "messages": [{"role": "assistant", "content": f"Got it — you want to transfer ${float(amt):.2f}. Which direction?"}],
+                "card": card_transfer_choose_direction(),
+                "debug": {"intent": intent, "entities": {"amount": float(amt)}, "policy": {"allow": True, "risk": "medium", "reason": "Needs direction"}, "ts": now_ts()},
+            }
 
-        # Create pending transfer for confirmation
+        # Case 3: direction provided but amount missing → ask amount
+        if from_acct and to_acct and amt is None:
+            state["pending_action"] = {"type": "transfer", "stage": "awaiting_amount", "from_account": from_acct, "to_account": to_acct}
+            return {
+                "session_id": req.session_id,
+                "messages": [{"role": "assistant", "content": f"How much would you like to transfer from {from_acct.title()} to {to_acct.title()}?"}],
+                "card": card_transfer_ask_amount(from_acct, to_acct),
+                "debug": {"intent": intent, "entities": {"from_account": from_acct, "to_account": to_acct}, "policy": {"allow": True, "risk": "medium", "reason": "Needs amount"}, "ts": now_ts()},
+            }
+
+        # Case 4: explicit amount + direction provided → go straight to confirm (current flow)
+        entities = {"amount": float(amt or 0), "from_account": from_acct, "to_account": to_acct}
+        policy = policy_check(intent, entities, state)
+        if not policy["allow"]:
+            state["pending_action"] = None
+            return {
+                "session_id": req.session_id,
+                "messages": [{"role": "assistant", "content": policy["reason"]}],
+                "card": {"title": "Transfer blocked", "subtitle": "Policy check", "body": policy["reason"], "actions": []},
+                "debug": {"intent": intent, "entities": entities, "policy": policy, "ts": now_ts()},
+            }
+
         action_id = str(uuid.uuid4())
-        state["pending_action"] = {"id": action_id, "type": "transfer", "amount": float(amt), "from": frm, "to": to}
-
-        return response(
-            req.session_id,
-            [{"role": "assistant", "content": "For your safety, please confirm this transfer (demo)."}],
-            make_card(
-                "Transfer Funds",
-                "Confirmation (demo-safe)",
-                f"Please confirm:\n"
-                f"- Amount: ${float(amt):.2f}\n"
-                f"- From: {frm.title()} (demo)\n"
-                f"- To:   {to.title()} (demo)\n\n"
-                f"No real money will move in this demo.",
-                actions=[
-                    {"label": "Confirm transfer", "action_name": "confirm_transfer", "params": {"action_id": action_id}},
-                    {"label": "Cancel", "action_name": "cancel_transfer", "params": {"action_id": action_id}},
-                ],
-            ),
-            {"intent": intent, "entities": entities, "policy": policy, "ts": now_ts()},
-        )
-
-    if intent == "travel_upcoming":
-        body = (
-            "Upcoming trip (demo):\n"
-            "• Orlando — Feb 18–22\n"
-            "• Hotel + flight: booked\n\n"
-            "Travel points (demo): 42,500"
-        )
-        return response(
-            req.session_id,
-            [{"role": "assistant", "content": "Here’s your upcoming travel (demo)."}],
-            make_card("Travel", "Upcoming travel + points (demo)", body, []),
-            {"intent": intent, "entities": entities, "policy": policy, "ts": now_ts()},
-        )
-
-    if intent == "assets_cd_maturity":
-        body = (
-            "CD Maturity Alert (demo):\n"
-            "• 12-month CD — matures in 14 days\n"
-            "• Current rate: 4.35% (demo)\n\n"
-            "Suggestion (demo): Review renew vs move funds to savings/investments."
-        )
-        return response(
-            req.session_id,
-            [{"role": "assistant", "content": "Here’s your CD maturity alert (demo)."}],
-            make_card("CD Maturity Alert", "Assets overview (demo)", body, []),
-            {"intent": intent, "entities": entities, "policy": policy, "ts": now_ts()},
-        )
-
-    if intent == "handoff_agent":
-        # Agentic: create a demo “handoff packet”
-        handoff = (
-            "Handoff packet (demo):\n"
-            f"- User: {req.user_id}\n"
-            f"- Last intent: {state['memory']['last_intent']}\n"
-            f"- Last request: {req.text}\n"
-            f"- Balances snapshot: Checking ${state['balances']['checking']:.2f}, Savings ${state['balances']['savings']:.2f}\n"
-            "\nAgent note (demo): Keep user in same context; do not ask them to repeat details."
-        )
-        return response(
-            req.session_id,
-            [{"role": "assistant", "content": "Connecting you to a specialist (demo). I’ll share context so you don’t repeat yourself."}],
-            make_card("Agent Handoff", "Connecting (demo)", handoff, []),
-            {"intent": intent, "entities": entities, "policy": policy, "ts": now_ts()},
-        )
+        state["pending_action"] = {
+            "id": action_id,
+            "type": "transfer",
+            "stage": "awaiting_confirm",
+            "from_account": from_acct,
+            "to_account": to_acct,
+            "amount": float(amt),
+        }
+        return {
+            "session_id": req.session_id,
+            "messages": [{"role": "assistant", "content": "For your safety, please confirm this transfer (demo)."}],
+            "card": card_transfer_confirm(from_acct, to_acct, float(amt), action_id),
+            "debug": {"intent": intent, "entities": entities, "policy": policy, "ts": now_ts()},
+        }
 
     # Fallback
-    return response(
-        req.session_id,
-        [{"role": "assistant", "content": "I didn’t catch that. Try: insights, spend analysis, recurring charges, account summary, transfer $25, or talk to an agent."}],
-        make_card(
-            "Try something else",
-            "Examples",
-            "• insights\n• spend analysis\n• recurring charges\n• account summary\n• transfer $25 from savings to checking\n• talk to an agent",
-            [],
-        ),
-        {"intent": intent, "entities": entities, "policy": policy, "ts": now_ts()},
-    )
+    return {
+        "session_id": req.session_id,
+        "messages": [{"role": "assistant", "content": "I didn’t catch that. Try: recurring charges, spend analysis, account summary, or transfer money."}],
+        "card": {
+            "title": "Try something else",
+            "subtitle": "Examples",
+            "body": "• recurring charges\n• spend analysis\n• account summary\n• transfer money",
+            "actions": [],
+        },
+        "debug": {"intent": intent, "entities": {}, "policy": {"allow": True, "risk": "low", "reason": "Allowed"}, "ts": now_ts()},
+    }
 
 # -----------------------------
-# API: Action (button clicks)
+# /action (button clicks)
 # -----------------------------
 @app.post("/action")
 def action(req: ActionRequest):
     state = get_state(req.session_id)
     pending = state.get("pending_action")
 
+    # Step 1: choose direction
+    if req.action_name == "transfer_set_direction":
+        from_acct = (req.params or {}).get("from_account")
+        to_acct = (req.params or {}).get("to_account")
+
+        if from_acct not in ("checking", "savings") or to_acct not in ("checking", "savings") or from_acct == to_acct:
+            return {"ok": False, "messages": [{"role": "assistant", "content": "Invalid direction (demo)."}]}
+
+        # if user earlier typed amount but lacked direction, carry it forward
+        amount_hint = None
+        if pending and pending.get("type") == "transfer" and pending.get("amount_hint") is not None:
+            try:
+                amount_hint = float(pending.get("amount_hint"))
+            except:
+                amount_hint = None
+
+        state["pending_action"] = {
+            "type": "transfer",
+            "stage": "awaiting_amount",
+            "from_account": from_acct,
+            "to_account": to_acct,
+        }
+
+        msg = f"Great — {from_acct.title()} → {to_acct.title()}. How much would you like to transfer?"
+        if amount_hint is not None:
+            msg = f"Great — {from_acct.title()} → {to_acct.title()}. You mentioned ${amount_hint:.2f}. Confirm the amount or type a new one."
+
+        return {
+            "ok": True,
+            "messages": [{"role": "assistant", "content": msg}],
+            "card": card_transfer_ask_amount(from_acct, to_acct),
+            "debug": {"action": req.action_name, "ts": now_ts()},
+        }
+
+    # Cancel transfer
     if req.action_name == "cancel_transfer":
         state["pending_action"] = None
         return {
             "ok": True,
             "messages": [{"role": "assistant", "content": "Transfer cancelled (demo)."}],
-            "card": make_card("Cancelled", "No changes made", "Nothing was transferred.", []),
+            "card": {"title": "Cancelled", "subtitle": "No changes made", "body": "Nothing was transferred.", "actions": []},
             "debug": {"action": req.action_name, "ts": now_ts()},
         }
 
+    # Confirm transfer
     if req.action_name == "confirm_transfer":
-        if not pending or pending.get("type") != "transfer":
+        if not pending or pending.get("type") != "transfer" or pending.get("stage") != "awaiting_confirm":
             return {"ok": False, "messages": [{"role": "assistant", "content": "No transfer to confirm."}]}
 
         amount = float(pending["amount"])
-        frm = pending.get("from", "checking")
-        to = pending.get("to", "savings")
+        from_acct = pending["from_account"]
+        to_acct = pending["to_account"]
 
-        # Guardrails (prevents negative balances)
-        if amount <= 0:
-            return {"ok": False, "messages": [{"role": "assistant", "content": "Transfer amount must be greater than $0."}]}
-
+        # Safety again (in case balances changed)
         b = state["balances"]
-        if b.get(frm, 0) < amount:
+        if amount > float(b.get(from_acct, 0)):
             state["pending_action"] = None
             return {
                 "ok": False,
-                "messages": [{"role": "assistant", "content": f"Insufficient funds in {frm.title()} (demo)."}],
-                "card": make_card("Action blocked", "Insufficient funds", f"{frm.title()} available: ${b.get(frm,0):.2f}", []),
-                "debug": {"action": req.action_name, "ts": now_ts()},
+                "messages": [{"role": "assistant", "content": f"Insufficient funds in {from_acct.title()} (demo)."}],
+                "card": {"title": "Transfer blocked", "subtitle": "Insufficient funds", "body": "Not enough balance.", "actions": []},
             }
 
-        # Execute (demo)
-        b[frm] -= amount
-        b[to] += amount
+        # Apply transfer
+        b[from_acct] -= amount
+        b[to_acct] += amount
         state["pending_action"] = None
 
         return {
             "ok": True,
-            "messages": [{"role": "assistant", "content": f"Transfer complete (demo). Moved ${amount:.2f} from {frm.title()} to {to.title()}."}],
-            "card": make_card(
-                "Transfer Complete",
-                "Updated balances (demo)",
-                f"Checking: ${b['checking']:.2f}\nSavings:  ${b['savings']:.2f}",
-                [],
-            ),
+            "messages": [{"role": "assistant", "content": f"Transfer complete (demo). Moved ${amount:.2f} to {to_acct.title()}."}],
+            "card": {
+                "title": "Transfer complete",
+                "subtitle": "Updated balances (demo)",
+                "body": f"Checking: ${b['checking']:.2f}\nSavings: ${b['savings']:.2f}",
+                "actions": [],
+            },
             "balances": b,
-            "debug": {"action": req.action_name, "from": frm, "to": to, "amount": amount, "ts": now_ts()},
+            "debug": {"action": req.action_name, "ts": now_ts()},
         }
 
-    return {
-        "ok": False,
-        "messages": [{"role": "assistant", "content": "Unknown action."}],
-        "debug": {"action": req.action_name, "ts": now_ts()},
-    }
+    return {"ok": False, "messages": [{"role": "assistant", "content": "Unknown action."}], "debug": {"action": req.action_name, "ts": now_ts()}}
