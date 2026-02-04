@@ -103,30 +103,31 @@ def parse_direction(text: str) -> Tuple[Optional[str], Optional[str]]:
     return None, None
 
 # -----------------------------
-# Intent routing (FIXED)
+# Intent routing
 # -----------------------------
 def route_intent(text: str) -> str:
     t = (text or "").lower().strip()
 
+    # ✅ Agent / human handoff
+    if "agent" in t or "representative" in t or "human" in t or "talk to" in t:
+        return "agent_handoff"
+
     # ✅ Insights (banking)
-    # chips: "insights"
     if t == "insights" or "show insights" in t or "my insights" in t:
         return "bank_insights"
 
     # ✅ CD maturity (assets)
-    # chips: "cd maturity alert"
     if "cd" in t and ("maturity" in t or "mature" in t or "alert" in t):
         return "assets_cd_maturity"
 
     # ✅ Upcoming travel (travel)
-    # chips: "upcoming travel"
-    if "upcoming travel" in t or "upcoming trip" in t or ("travel" in t and "upcoming" in t) or "vacation" in t:
+    if (
+        "upcoming travel" in t
+        or "upcoming trip" in t
+        or ("travel" in t and "upcoming" in t)
+        or "vacation" in t
+    ):
         return "travel_upcoming"
-    
-        # Agent / human handoff
-    if "agent" in t or "representative" in t or "human" in t or "talk to" in t:
-        return "agent_handoff"
-
 
     # Existing:
     if "recurring" in t or "subscription" in t:
@@ -135,9 +136,7 @@ def route_intent(text: str) -> str:
         return "bank_spend_analysis"
     if "account" in t and ("summary" in t or "balance" in t):
         return "bank_account_summary"
-    if "transfer" in t or "send" in t or "move money" in t:
-        return "bank_transfer"
-    if "transfer money" in t:
+    if "transfer" in t or "send" in t or "move money" in t or "transfer money" in t:
         return "bank_transfer"
 
     return "unknown"
@@ -296,9 +295,31 @@ def orchestrate(req: OrchestrateRequest):
             "debug": {"intent": "bank_transfer", "entities": entities, "policy": policy, "ts": now_ts()},
         }
 
-    # -----------------------------
-    # ✅ NEW: Insights
-    # -----------------------------
+    # ✅ Agent handoff
+    if intent == "agent_handoff":
+        agent_notes = (
+            "Agent Notes (demo):\n"
+            f"- User: {req.user_id}\n"
+            f"- Request: {text}\n"
+            "- Suggested next step: verify identity + confirm issue category\n"
+            "- Context: demo environment, no real transactions\n"
+        )
+        return {
+            "session_id": req.session_id,
+            "messages": [{"role": "assistant", "content": "I can connect you to an agent. Want to proceed?"}],
+            "card": {
+                "title": "Talk to an Agent",
+                "subtitle": "Secure handoff (demo)",
+                "body": "If you confirm, I’ll create an agent handoff package (notes + context) and ‘connect’ you (demo).",
+                "actions": [
+                    {"label": "Connect me to an agent", "action_name": "agent_connect", "params": {"agent_notes": agent_notes}},
+                    {"label": "Not now", "action_name": "agent_cancel", "params": {}},
+                ],
+            },
+            "debug": {"intent": intent, "entities": {}, "policy": {"allow": True, "risk": "low", "reason": "Allowed"}, "ts": now_ts()},
+        }
+
+    # ✅ Insights
     if intent == "bank_insights":
         return {
             "session_id": req.session_id,
@@ -319,9 +340,7 @@ def orchestrate(req: OrchestrateRequest):
             "debug": {"intent": intent, "entities": {}, "policy": {"allow": True, "risk": "low", "reason": "Allowed"}, "ts": now_ts()},
         }
 
-    # -----------------------------
-    # ✅ NEW: CD Maturity Alert
-    # -----------------------------
+    # ✅ CD maturity alert
     if intent == "assets_cd_maturity":
         return {
             "session_id": req.session_id,
@@ -339,9 +358,7 @@ def orchestrate(req: OrchestrateRequest):
             "debug": {"intent": intent, "entities": {}, "policy": {"allow": True, "risk": "low", "reason": "Allowed"}, "ts": now_ts()},
         }
 
-    # -----------------------------
-    # ✅ NEW: Upcoming Travel
-    # -----------------------------
+    # ✅ Upcoming travel
     if intent == "travel_upcoming":
         return {
             "session_id": req.session_id,
@@ -360,7 +377,7 @@ def orchestrate(req: OrchestrateRequest):
             "debug": {"intent": intent, "entities": {}, "policy": {"allow": True, "risk": "low", "reason": "Allowed"}, "ts": now_ts()},
         }
 
-    # ---- Existing intents ----
+    # Existing intents
     if intent == "bank_recurring_charges":
         return {
             "session_id": req.session_id,
@@ -419,7 +436,7 @@ def orchestrate(req: OrchestrateRequest):
         from_acct, to_acct = parse_direction(text)
         amt = parse_amount(text)
 
-        # Case 1: user just says “transfer money” OR “transfer” without enough info → show direction options
+        # Case 1: no direction + no amount -> show direction options (wizard start)
         if (from_acct is None or to_acct is None) and amt is None:
             state["pending_action"] = {"type": "transfer", "stage": "awaiting_direction"}
             return {
@@ -429,7 +446,7 @@ def orchestrate(req: OrchestrateRequest):
                 "debug": {"intent": intent, "entities": {}, "policy": {"allow": True, "risk": "medium", "reason": "Needs direction"}, "ts": now_ts()},
             }
 
-        # Case 2: amount provided but direction missing → ask direction (still show two options)
+        # Case 2: amount present, direction missing -> ask direction
         if (from_acct is None or to_acct is None) and amt is not None:
             state["pending_action"] = {"type": "transfer", "stage": "awaiting_direction", "amount_hint": float(amt)}
             return {
@@ -439,7 +456,7 @@ def orchestrate(req: OrchestrateRequest):
                 "debug": {"intent": intent, "entities": {"amount": float(amt)}, "policy": {"allow": True, "risk": "medium", "reason": "Needs direction"}, "ts": now_ts()},
             }
 
-        # Case 3: direction provided but amount missing → ask amount
+        # Case 3: direction present, amount missing -> ask amount
         if from_acct and to_acct and amt is None:
             state["pending_action"] = {"type": "transfer", "stage": "awaiting_amount", "from_account": from_acct, "to_account": to_acct}
             return {
@@ -449,7 +466,7 @@ def orchestrate(req: OrchestrateRequest):
                 "debug": {"intent": intent, "entities": {"from_account": from_acct, "to_account": to_acct}, "policy": {"allow": True, "risk": "medium", "reason": "Needs amount"}, "ts": now_ts()},
             }
 
-        # Case 4: explicit amount + direction provided → go straight to confirm
+        # Case 4: explicit amount + direction -> confirm
         entities = {"amount": float(amt or 0), "from_account": from_acct, "to_account": to_acct}
         policy = policy_check(intent, entities, state)
         if not policy["allow"]:
@@ -480,11 +497,11 @@ def orchestrate(req: OrchestrateRequest):
     # Fallback
     return {
         "session_id": req.session_id,
-        "messages": [{"role": "assistant", "content": "I didn’t catch that. Try: insights, recurring charges, spend analysis, account summary, upcoming travel, cd maturity alert, or transfer money."}],
+        "messages": [{"role": "assistant", "content": "I didn’t catch that. Try: insights, recurring charges, spend analysis, account summary, upcoming travel, cd maturity alert, talk to an agent, or transfer money."}],
         "card": {
             "title": "Try something else",
             "subtitle": "Examples",
-            "body": "• insights\n• recurring charges\n• spend analysis\n• account summary\n• upcoming travel\n• cd maturity alert\n• transfer money",
+            "body": "• insights\n• recurring charges\n• spend analysis\n• account summary\n• upcoming travel\n• cd maturity alert\n• talk to an agent\n• transfer money",
             "actions": [],
         },
         "debug": {"intent": intent, "entities": {}, "policy": {"allow": True, "risk": "low", "reason": "Allowed"}, "ts": now_ts()},
@@ -498,7 +515,35 @@ def action(req: ActionRequest):
     state = get_state(req.session_id)
     pending = state.get("pending_action")
 
-    # Step 1: choose direction
+    # ✅ Agent actions
+    if req.action_name == "agent_cancel":
+        return {
+            "ok": True,
+            "messages": [{"role": "assistant", "content": "No problem — I’m here if you need me."}],
+            "card": {
+                "title": "Handoff cancelled",
+                "subtitle": "Stay with Compass",
+                "body": "You can continue with self-service whenever you’re ready.",
+                "actions": [],
+            },
+            "debug": {"action": req.action_name, "ts": now_ts()},
+        }
+
+    if req.action_name == "agent_connect":
+        notes = (req.params or {}).get("agent_notes") or "Agent notes unavailable (demo)."
+        return {
+            "ok": True,
+            "messages": [{"role": "assistant", "content": "Done — I’ve prepared your handoff package (demo)."}],
+            "card": {
+                "title": "Connected to Agent (Demo)",
+                "subtitle": "Agent handoff package",
+                "body": notes + "\n\n(Real systems would now route you to chat/call with an authenticated agent.)",
+                "actions": [],
+            },
+            "debug": {"action": req.action_name, "ts": now_ts()},
+        }
+
+    # Transfer: choose direction
     if req.action_name == "transfer_set_direction":
         from_acct = (req.params or {}).get("from_account")
         to_acct = (req.params or {}).get("to_account")
