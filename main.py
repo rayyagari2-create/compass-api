@@ -122,6 +122,11 @@ def route_intent(text: str) -> str:
     # chips: "upcoming travel"
     if "upcoming travel" in t or "upcoming trip" in t or ("travel" in t and "upcoming" in t) or "vacation" in t:
         return "travel_upcoming"
+    
+        # Agent / human handoff
+    if "agent" in t or "representative" in t or "human" in t or "talk to" in t:
+        return "agent_handoff"
+
 
     # Existing:
     if "recurring" in t or "subscription" in t:
