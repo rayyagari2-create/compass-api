@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, Tuple
 import re
 import time
 import uuid
@@ -18,8 +18,8 @@ app.add_middleware(
         "http://localhost:3001",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:3001",
-        "https://compass-ui-blush.vercel.app" ,
-            ],
+        "https://compass-ui-blush.vercel.app",
+    ],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -87,24 +87,43 @@ def parse_amount(text: str) -> Optional[float]:
 
 def parse_direction(text: str) -> Tuple[Optional[str], Optional[str]]:
     t = (text or "").lower()
+
     m = DIR_RE_1.search(t)
     if m:
-        # "from X to Y"
         parts = re.findall(ACCT, m.group(0), flags=re.IGNORECASE)
         if len(parts) == 2:
             return parts[0].lower(), parts[1].lower()
 
     m = DIR_RE_2.search(t)
     if m:
-        # "X to Y"
         parts = re.findall(ACCT, m.group(0), flags=re.IGNORECASE)
         if len(parts) == 2:
             return parts[0].lower(), parts[1].lower()
 
     return None, None
 
+# -----------------------------
+# Intent routing (FIXED)
+# -----------------------------
 def route_intent(text: str) -> str:
     t = (text or "").lower().strip()
+
+    # ✅ Insights (banking)
+    # chips: "insights"
+    if t == "insights" or "show insights" in t or "my insights" in t:
+        return "bank_insights"
+
+    # ✅ CD maturity (assets)
+    # chips: "cd maturity alert"
+    if "cd" in t and ("maturity" in t or "mature" in t or "alert" in t):
+        return "assets_cd_maturity"
+
+    # ✅ Upcoming travel (travel)
+    # chips: "upcoming travel"
+    if "upcoming travel" in t or "upcoming trip" in t or ("travel" in t and "upcoming" in t) or "vacation" in t:
+        return "travel_upcoming"
+
+    # Existing:
     if "recurring" in t or "subscription" in t:
         return "bank_recurring_charges"
     if "spend" in t and ("analysis" in t or "insight" in t):
@@ -113,9 +132,9 @@ def route_intent(text: str) -> str:
         return "bank_account_summary"
     if "transfer" in t or "send" in t or "move money" in t:
         return "bank_transfer"
-    # also accept “transfer money”
     if "transfer money" in t:
         return "bank_transfer"
+
     return "unknown"
 
 # -----------------------------
@@ -234,7 +253,6 @@ def orchestrate(req: OrchestrateRequest):
     if pending and pending.get("type") == "transfer" and pending.get("stage") == "awaiting_amount":
         amt = parse_amount(text)
         if amt is None:
-            # still awaiting amount; keep asking nicely
             return {
                 "session_id": req.session_id,
                 "messages": [{"role": "assistant", "content": "How much would you like to transfer?"}],
@@ -249,7 +267,6 @@ def orchestrate(req: OrchestrateRequest):
         }
         policy = policy_check("bank_transfer", entities, state)
         if not policy["allow"]:
-            # Cancel pending wizard on hard stop
             state["pending_action"] = None
             return {
                 "session_id": req.session_id,
@@ -274,7 +291,71 @@ def orchestrate(req: OrchestrateRequest):
             "debug": {"intent": "bank_transfer", "entities": entities, "policy": policy, "ts": now_ts()},
         }
 
-    # ---- Normal intents ----
+    # -----------------------------
+    # ✅ NEW: Insights
+    # -----------------------------
+    if intent == "bank_insights":
+        return {
+            "session_id": req.session_id,
+            "messages": [{"role": "assistant", "content": "Good news — I have new insights ready for you (demo)."}],
+            "card": {
+                "title": "Insights",
+                "subtitle": "New insights — tap a card to view details",
+                "body": (
+                    "Duplicate Charges\n"
+                    "You may have been charged more than once for the same item.\n\n"
+                    "Spend Path\n"
+                    "You’re trending higher this month (demo).\n\n"
+                    "Subscriptions & Recurring Charges\n"
+                    "3 charges may be due this week."
+                ),
+                "actions": [],
+            },
+            "debug": {"intent": intent, "entities": {}, "policy": {"allow": True, "risk": "low", "reason": "Allowed"}, "ts": now_ts()},
+        }
+
+    # -----------------------------
+    # ✅ NEW: CD Maturity Alert
+    # -----------------------------
+    if intent == "assets_cd_maturity":
+        return {
+            "session_id": req.session_id,
+            "messages": [{"role": "assistant", "content": "Here’s your CD maturity alert (demo)."}],
+            "card": {
+                "title": "CD Maturity Alert",
+                "subtitle": "Next 30 days (demo)",
+                "body": (
+                    "12-month CD — $5,000 — matures in 12 days\n"
+                    "6-month CD — $2,500 — matures in 21 days\n\n"
+                    "Suggestion (demo): Roll into a new CD ladder or move to Savings if you need liquidity."
+                ),
+                "actions": [],
+            },
+            "debug": {"intent": intent, "entities": {}, "policy": {"allow": True, "risk": "low", "reason": "Allowed"}, "ts": now_ts()},
+        }
+
+    # -----------------------------
+    # ✅ NEW: Upcoming Travel
+    # -----------------------------
+    if intent == "travel_upcoming":
+        return {
+            "session_id": req.session_id,
+            "messages": [{"role": "assistant", "content": "Here’s your upcoming travel (demo)."}],
+            "card": {
+                "title": "Upcoming Travel",
+                "subtitle": "Next trip (demo)",
+                "body": (
+                    "Orlando, FL — Feb 28–Mar 3\n"
+                    "Flight: Confirmed\n"
+                    "Hotel: Reserved\n\n"
+                    "Travel points (demo): 42,500"
+                ),
+                "actions": [],
+            },
+            "debug": {"intent": intent, "entities": {}, "policy": {"allow": True, "risk": "low", "reason": "Allowed"}, "ts": now_ts()},
+        }
+
+    # ---- Existing intents ----
     if intent == "bank_recurring_charges":
         return {
             "session_id": req.session_id,
@@ -303,10 +384,19 @@ def orchestrate(req: OrchestrateRequest):
         }
 
     if intent == "bank_spend_analysis":
-        # Keep whatever you already had; leaving simple here
         charts = {
-            "pie": [{"name": "Groceries", "value": 420}, {"name": "Dining", "value": 260}, {"name": "Gas", "value": 110}, {"name": "Subscriptions", "value": 35}],
-            "trend": [{"day": "W1", "value": 820}, {"day": "W2", "value": 910}, {"day": "W3", "value": 980}, {"day": "W4", "value": 1045}],
+            "pie": [
+                {"name": "Groceries", "value": 420},
+                {"name": "Dining", "value": 260},
+                {"name": "Gas", "value": 110},
+                {"name": "Subscriptions", "value": 35},
+            ],
+            "trend": [
+                {"day": "W1", "value": 820},
+                {"day": "W2", "value": 910},
+                {"day": "W3", "value": 980},
+                {"day": "W4", "value": 1045},
+            ],
         }
         return {
             "session_id": req.session_id,
@@ -321,13 +411,11 @@ def orchestrate(req: OrchestrateRequest):
         }
 
     if intent == "bank_transfer":
-        # Parse explicit direction/amount if user gave it
         from_acct, to_acct = parse_direction(text)
         amt = parse_amount(text)
 
         # Case 1: user just says “transfer money” OR “transfer” without enough info → show direction options
         if (from_acct is None or to_acct is None) and amt is None:
-            # Start wizard
             state["pending_action"] = {"type": "transfer", "stage": "awaiting_direction"}
             return {
                 "session_id": req.session_id,
@@ -356,7 +444,7 @@ def orchestrate(req: OrchestrateRequest):
                 "debug": {"intent": intent, "entities": {"from_account": from_acct, "to_account": to_acct}, "policy": {"allow": True, "risk": "medium", "reason": "Needs amount"}, "ts": now_ts()},
             }
 
-        # Case 4: explicit amount + direction provided → go straight to confirm (current flow)
+        # Case 4: explicit amount + direction provided → go straight to confirm
         entities = {"amount": float(amt or 0), "from_account": from_acct, "to_account": to_acct}
         policy = policy_check(intent, entities, state)
         if not policy["allow"]:
@@ -387,11 +475,11 @@ def orchestrate(req: OrchestrateRequest):
     # Fallback
     return {
         "session_id": req.session_id,
-        "messages": [{"role": "assistant", "content": "I didn’t catch that. Try: recurring charges, spend analysis, account summary, or transfer money."}],
+        "messages": [{"role": "assistant", "content": "I didn’t catch that. Try: insights, recurring charges, spend analysis, account summary, upcoming travel, cd maturity alert, or transfer money."}],
         "card": {
             "title": "Try something else",
             "subtitle": "Examples",
-            "body": "• recurring charges\n• spend analysis\n• account summary\n• transfer money",
+            "body": "• insights\n• recurring charges\n• spend analysis\n• account summary\n• upcoming travel\n• cd maturity alert\n• transfer money",
             "actions": [],
         },
         "debug": {"intent": intent, "entities": {}, "policy": {"allow": True, "risk": "low", "reason": "Allowed"}, "ts": now_ts()},
@@ -413,7 +501,7 @@ def action(req: ActionRequest):
         if from_acct not in ("checking", "savings") or to_acct not in ("checking", "savings") or from_acct == to_acct:
             return {"ok": False, "messages": [{"role": "assistant", "content": "Invalid direction (demo)."}]}
 
-        # if user earlier typed amount but lacked direction, carry it forward
+        # carry amount hint if present
         amount_hint = None
         if pending and pending.get("type") == "transfer" and pending.get("amount_hint") is not None:
             try:
@@ -458,7 +546,6 @@ def action(req: ActionRequest):
         from_acct = pending["from_account"]
         to_acct = pending["to_account"]
 
-        # Safety again (in case balances changed)
         b = state["balances"]
         if amount > float(b.get(from_acct, 0)):
             state["pending_action"] = None
@@ -468,7 +555,6 @@ def action(req: ActionRequest):
                 "card": {"title": "Transfer blocked", "subtitle": "Insufficient funds", "body": "Not enough balance.", "actions": []},
             }
 
-        # Apply transfer
         b[from_acct] -= amount
         b[to_acct] += amount
         state["pending_action"] = None
