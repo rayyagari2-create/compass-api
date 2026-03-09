@@ -450,7 +450,7 @@ def orchestrate(req: OrchestrateRequest):
         }
 
     # -----------------------------
-    # CD Maturity (renamed card: Manage CD)
+    # CD Maturity (Manage CD)
     # -----------------------------
     if intent == "assets_cd_maturity":
         trace = make_trace(
@@ -461,17 +461,40 @@ def orchestrate(req: OrchestrateRequest):
             result="Returned Manage CD card",
             confidence="high",
         )
+        cd_data = {
+            "cds": [
+                {
+                    "label": "12-Month CD",
+                    "principal": 5000,
+                    "apy": 4.75,
+                    "term_months": 12,
+                    "elapsed_months": 11,
+                    "days_to_maturity": 12,
+                    "maturity_date": "Mar 21, 2026",
+                    "early_withdrawal_penalty": "90 days interest",
+                    "status": "active",
+                },
+                {
+                    "label": "6-Month CD",
+                    "principal": 2500,
+                    "apy": 4.25,
+                    "term_months": 6,
+                    "elapsed_months": 5,
+                    "days_to_maturity": 21,
+                    "maturity_date": "Mar 30, 2026",
+                    "early_withdrawal_penalty": "60 days interest",
+                    "status": "active",
+                },
+            ],
+            "suggestion": "Consider rolling into a CD ladder or moving to Savings for liquidity.",
+        }
         return {
             "session_id": req.session_id,
-            "messages": [{"role": "assistant", "content": "Here’s your CD maturity details."}],
+            "messages": [{"role": "assistant", "content": "Here are your CD positions."}],
             "card": {
                 "title": "Manage CD",
-                "subtitle": "Upcoming maturity (next 30 days)",
-                "body": (
-                    "12-month CD — $5,000 — matures in 12 days\n"
-                    "6-month CD — $2,500 — matures in 21 days\n\n"
-                    "Suggestion: roll into a ladder or move to Savings if you need liquidity."
-                ),
+                "subtitle": "Upcoming maturity",
+                "body": "",
                 "actions": [],
             },
             "debug": {
@@ -479,12 +502,13 @@ def orchestrate(req: OrchestrateRequest):
                 "entities": {},
                 "policy": {"allow": True, "risk": "low", "reason": "Allowed"},
                 "agent_trace": trace,
+                "cd": cd_data,
                 "ts": now_ts(),
             },
         }
 
     # -----------------------------
-    # Travel upcoming (rename card title: Travel) + ✅ enrich details
+    # Travel upcoming
     # -----------------------------
     if intent == "travel_upcoming":
         trace = make_trace(
@@ -495,24 +519,33 @@ def orchestrate(req: OrchestrateRequest):
             result="Returned Travel card",
             confidence="high",
         )
+        travel_data = {
+            "destination": "Orlando, FL",
+            "dates": "Feb 28 – Mar 3",
+            "days_until": 5,
+            "status": "confirmed",
+            "flight": {
+                "airline": "JetBlue",
+                "number": "B6 417",
+                "outbound": {"from": "CMH", "to": "MCO", "depart": "9:10 AM", "arrive": "11:38 AM"},
+                "return": {"from": "MCO", "to": "CMH", "depart": "6:25 PM", "arrive": "8:52 PM"},
+            },
+            "hotel": {
+                "name": "Hyatt Regency Orlando",
+                "address": "9801 International Dr, Orlando, FL",
+                "checkin": "4:00 PM",
+                "checkout": "11:00 AM",
+                "confirmation": "HY-82K19",
+            },
+            "points": 42500,
+        }
         return {
             "session_id": req.session_id,
-            "messages": [{"role": "assistant", "content": "Here’s your travel details."}],
+            "messages": [{"role": "assistant", "content": "Here’s your upcoming trip to Orlando."}],
             "card": {
                 "title": "Travel",
                 "subtitle": "Next trip",
-                "body": (
-                    "Destination: Orlando, FL\n"
-                    "Dates: Feb 28–Mar 3\n\n"
-                    "Flight: JetBlue B6 417\n"
-                    "Depart: CMH 9:10 AM → MCO 11:38 AM\n"
-                    "Return: MCO 6:25 PM → CMH 8:52 PM\n\n"
-                    "Hotel: Hyatt Regency Orlando\n"
-                    "Address: 9801 International Dr, Orlando, FL\n"
-                    "Check-in: 4:00 PM • Check-out: 11:00 AM\n"
-                    "Confirmation: HY-82K19\n\n"
-                    "Travel points: 42,500"
-                ),
+                "body": "",
                 "actions": [],
             },
             "debug": {
@@ -520,6 +553,7 @@ def orchestrate(req: OrchestrateRequest):
                 "entities": {},
                 "policy": {"allow": True, "risk": "low", "reason": "Allowed"},
                 "agent_trace": trace,
+                "travel": travel_data,
                 "ts": now_ts(),
             },
         }
@@ -635,19 +669,25 @@ def orchestrate(req: OrchestrateRequest):
     # Spend analysis
     # -----------------------------
     if intent == "bank_spend_analysis":
-        charts = {
-            "pie": [
-                {"name": "Groceries", "value": 420},
-                {"name": "Dining", "value": 260},
-                {"name": "Gas", "value": 110},
-                {"name": "Subscriptions", "value": 35},
+        spend_data = {
+            "total": 825,
+            "vs_last_month": "+12%",
+            "categories": [
+                {"name": "Groceries", "value": 420, "color": "#34d399"},
+                {"name": "Dining", "value": 260, "color": "#60a5fa"},
+                {"name": "Gas", "value": 110, "color": "#fbbf24"},
+                {"name": "Subscriptions", "value": 35, "color": "#f472b6"},
             ],
             "trend": [
-                {"day": "W1", "value": 820},
-                {"day": "W2", "value": 910},
-                {"day": "W3", "value": 980},
-                {"day": "W4", "value": 1045},
+                {"day": "Week 1", "value": 820},
+                {"day": "Week 2", "value": 910},
+                {"day": "Week 3", "value": 980},
+                {"day": "Week 4", "value": 1045},
             ],
+            "suggestion": {
+                "text": "Dining is trending higher — consider setting a weekly cap.",
+                "severity": "warning",
+            },
         }
 
         trace = make_trace(
@@ -665,21 +705,18 @@ def orchestrate(req: OrchestrateRequest):
             "card": {
                 "title": "Spend Analysis",
                 "subtitle": "This month vs last month",
-                "body": (
-                    "Top categories:\n"
-                    "- Groceries: $420\n"
-                    "- Dining: $260\n"
-                    "- Gas: $110\n"
-                    "- Subscriptions: $35\n\n"
-                    "Suggestion: Dining is trending higher — consider setting a weekly cap."
-                ),
+                "body": "",
                 "actions": [],
             },
             "debug": {
                 "intent": intent,
                 "entities": {},
                 "policy": {"allow": True, "risk": "low", "reason": "Allowed"},
-                "charts": charts,
+                "spend": spend_data,
+                "charts": {
+                    "pie": spend_data["categories"],
+                    "trend": spend_data["trend"],
+                },
                 "agent_trace": trace,
                 "ts": now_ts(),
             },
@@ -866,19 +903,25 @@ def action(req: ActionRequest):
 
         # Route to existing experiences so VIEW always shows something real
         if iid == "spend_path":
-            charts = {
-                "pie": [
-                    {"name": "Groceries", "value": 420},
-                    {"name": "Dining", "value": 260},
-                    {"name": "Gas", "value": 110},
-                    {"name": "Subscriptions", "value": 35},
+            spend_data = {
+                "total": 825,
+                "vs_last_month": "+12%",
+                "categories": [
+                    {"name": "Groceries", "value": 420, "color": "#34d399"},
+                    {"name": "Dining", "value": 260, "color": "#60a5fa"},
+                    {"name": "Gas", "value": 110, "color": "#fbbf24"},
+                    {"name": "Subscriptions", "value": 35, "color": "#f472b6"},
                 ],
                 "trend": [
-                    {"day": "W1", "value": 820},
-                    {"day": "W2", "value": 910},
-                    {"day": "W3", "value": 980},
-                    {"day": "W4", "value": 1045},
+                    {"day": "Week 1", "value": 820},
+                    {"day": "Week 2", "value": 910},
+                    {"day": "Week 3", "value": 980},
+                    {"day": "Week 4", "value": 1045},
                 ],
+                "suggestion": {
+                    "text": "Dining is trending higher — consider setting a weekly cap.",
+                    "severity": "warning",
+                },
             }
 
             trace = make_trace(
@@ -895,17 +938,19 @@ def action(req: ActionRequest):
                 "card": {
                     "title": "Spend Analysis",
                     "subtitle": "This month vs last month",
-                    "body": (
-                        "Top categories:\n"
-                        "- Groceries: $420\n"
-                        "- Dining: $260\n"
-                        "- Gas: $110\n"
-                        "- Subscriptions: $35\n\n"
-                        "Suggestion: Dining is trending higher — consider setting a weekly cap."
-                    ),
+                    "body": "",
                     "actions": [],
                 },
-                "debug": {"action": req.action_name, "agent_trace": trace, "charts": charts, "ts": now_ts()},
+                "debug": {
+                    "action": req.action_name,
+                    "agent_trace": trace,
+                    "spend": spend_data,
+                    "charts": {
+                        "pie": spend_data["categories"],
+                        "trend": spend_data["trend"],
+                    },
+                    "ts": now_ts(),
+                },
             }
 
         if iid == "upcoming_cd_maturity":
@@ -917,20 +962,43 @@ def action(req: ActionRequest):
                 result="Returned Manage CD card",
                 confidence="high",
             )
+            cd_data = {
+                "cds": [
+                    {
+                        "label": "12-Month CD",
+                        "principal": 5000,
+                        "apy": 4.75,
+                        "term_months": 12,
+                        "elapsed_months": 11,
+                        "days_to_maturity": 12,
+                        "maturity_date": "Mar 21, 2026",
+                        "early_withdrawal_penalty": "90 days interest",
+                        "status": "active",
+                    },
+                    {
+                        "label": "6-Month CD",
+                        "principal": 2500,
+                        "apy": 4.25,
+                        "term_months": 6,
+                        "elapsed_months": 5,
+                        "days_to_maturity": 21,
+                        "maturity_date": "Mar 30, 2026",
+                        "early_withdrawal_penalty": "60 days interest",
+                        "status": "active",
+                    },
+                ],
+                "suggestion": "Consider rolling into a CD ladder or moving to Savings for liquidity.",
+            }
             return {
                 "ok": True,
                 "messages": [{"role": "assistant", "content": "Opening Manage CD."}],
                 "card": {
                     "title": "Manage CD",
-                    "subtitle": "Upcoming maturity (next 30 days)",
-                    "body": (
-                        "12-month CD — $5,000 — matures in 12 days\n"
-                        "6-month CD — $2,500 — matures in 21 days\n\n"
-                        "Suggestion: roll into a ladder or move to Savings if you need liquidity."
-                    ),
+                    "subtitle": "Upcoming maturity",
+                    "body": "",
                     "actions": [],
                 },
-                "debug": {"action": req.action_name, "agent_trace": trace, "ts": now_ts()},
+                "debug": {"action": req.action_name, "agent_trace": trace, "cd": cd_data, "ts": now_ts()},
             }
 
         if iid == "travel":
@@ -942,27 +1010,36 @@ def action(req: ActionRequest):
                 result="Returned Travel card",
                 confidence="high",
             )
+            travel_data = {
+                "destination": "Orlando, FL",
+                "dates": "Feb 28 – Mar 3",
+                "days_until": 5,
+                "status": "confirmed",
+                "flight": {
+                    "airline": "JetBlue",
+                    "number": "B6 417",
+                    "outbound": {"from": "CMH", "to": "MCO", "depart": "9:10 AM", "arrive": "11:38 AM"},
+                    "return": {"from": "MCO", "to": "CMH", "depart": "6:25 PM", "arrive": "8:52 PM"},
+                },
+                "hotel": {
+                    "name": "Hyatt Regency Orlando",
+                    "address": "9801 International Dr, Orlando, FL",
+                    "checkin": "4:00 PM",
+                    "checkout": "11:00 AM",
+                    "confirmation": "HY-82K19",
+                },
+                "points": 42500,
+            }
             return {
                 "ok": True,
                 "messages": [{"role": "assistant", "content": "Opening Travel."}],
                 "card": {
                     "title": "Travel",
                     "subtitle": "Next trip",
-                    "body": (
-                        "Destination: Orlando, FL\n"
-                        "Dates: Feb 28–Mar 3\n\n"
-                        "Flight: JetBlue B6 417\n"
-                        "Depart: CMH 9:10 AM → MCO 11:38 AM\n"
-                        "Return: MCO 6:25 PM → CMH 8:52 PM\n\n"
-                        "Hotel: Hyatt Regency Orlando\n"
-                        "Address: 9801 International Dr, Orlando, FL\n"
-                        "Check-in: 4:00 PM • Check-out: 11:00 AM\n"
-                        "Confirmation: HY-82K19\n\n"
-                        "Travel points: 42,500"
-                    ),
+                    "body": "",
                     "actions": [],
                 },
-                "debug": {"action": req.action_name, "agent_trace": trace, "ts": now_ts()},
+                "debug": {"action": req.action_name, "agent_trace": trace, "travel": travel_data, "ts": now_ts()},
             }
 
         # Remaining items: simple detail cards (subscriptions, etc.)

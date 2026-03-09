@@ -78,9 +78,42 @@ Traces use professional names for the MD demo:
 - `Policy Engine` — transfer policy gating
 - `Planner` — fallback/routing
 
+## Structured Card Data
+Three cards now return structured JSON in `debug` instead of raw text `body`:
+
+### Travel (`debug.travel`)
+```json
+{ "destination", "dates", "days_until", "status",
+  "flight": { "airline", "number", "outbound": { "from", "to", "depart", "arrive" }, "return": {...} },
+  "hotel": { "name", "address", "checkin", "checkout", "confirmation" },
+  "points" }
+```
+UI renders: destination hero, countdown badge, itinerary-style flight (airport codes + times),
+hotel card with confirmation badge. Status badge (Confirmed/green).
+
+### Manage CD (`debug.cd`)
+```json
+{ "cds": [{ "label", "principal", "apy", "term_months", "elapsed_months",
+             "days_to_maturity", "maturity_date", "early_withdrawal_penalty", "status" }],
+  "suggestion" }
+```
+UI renders: per-CD card with large APY callout, principal/maturity/penalty grid, progress bar,
+suggestion callout (amber). Active status badge.
+
+### Spend Analysis (`debug.spend`)
+```json
+{ "total", "vs_last_month",
+  "categories": [{ "name", "value", "color" }],
+  "trend": [{ "day", "value" }],
+  "suggestion": { "text", "severity" } }
+```
+UI renders: total headline ($825) with delta badge, horizontal bar chart (replaces pie),
+spend trend line chart, suggestion callout (amber). Category bars color-coded to match.
+
 ## Conventions
 - All API responses include a `debug` payload with `agent_trace` (Planner/Delegate/Act)
 - Card responses follow: `{ title, subtitle, body, actions[] }`
+- Structured cards send `body: ""` and put rich data in `debug` (travel, cd, spend)
 - No real banking actions — all data is hardcoded demo data
 - CORS allows localhost:3000/3001 and Vercel deployment
 - No "(demo)" text in any API response — UI should not need to strip it
@@ -97,6 +130,10 @@ uvicorn main:app --reload --port 8000
 - Env var: `NEXT_PUBLIC_API_BASE` (defaults to http://127.0.0.1:8000)
 
 ## Changelog
+- **v1.2** — Structured card data for Travel (itinerary layout, countdown, status badge),
+  Manage CD (APY callout, progress bar, penalty grid), and Spend Analysis (horizontal bar
+  chart replacing pie, total headline with delta, suggestion callout). API returns structured
+  JSON in debug payload; UI renders rich components instead of raw text.
 - **v1.1** — Enriched insights with metric/category/priority/is_new fields; intent-first
   escape hatch for transfer wizard; professional agent trace names; bare except cleanup
 - **v1.0** — Initial orchestrator with transfer wizard, insights, travel, CD, handoff
