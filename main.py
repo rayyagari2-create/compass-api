@@ -208,21 +208,37 @@ INSIGHTS = [
         "id": "spend_path",
         "title": "Spend Path",
         "subtitle": "You’re trending higher this month.",
+        "metric": "+18% vs last month",
+        "category": "spend",
+        "priority": "high",
+        "is_new": True,
     },
     {
         "id": "upcoming_cd_maturity",
-        "title": "Upcoming CD maturity",
+        "title": "Upcoming CD Maturity",
         "subtitle": "Two CDs are maturing soon.",
+        "metric": "2 CDs in 12 days",
+        "category": "assets",
+        "priority": "medium",
+        "is_new": True,
     },
     {
         "id": "travel",
         "title": "Travel",
         "subtitle": "Next trip is coming up.",
+        "metric": "Feb 28 — Orlando, FL",
+        "category": "travel",
+        "priority": "low",
+        "is_new": False,
     },
     {
         "id": "subscriptions",
-        "title": "Subscriptions & Recurring Charges",
+        "title": "Subscriptions",
         "subtitle": "3 charges may be due this week.",
+        "metric": "$30.47 due this week",
+        "category": "recurring",
+        "priority": "low",
+        "is_new": False,
     },
 ]
 
@@ -315,47 +331,84 @@ def orchestrate(req: OrchestrateRequest):
     # ---- If a transfer wizard is mid-flight, allow user to just type the amount ----
     pending = state.get("pending_action")
     if pending and pending.get("type") == "transfer" and pending.get("stage") == "awaiting_amount":
-        amt = parse_amount(text)
+        # Option C: If user changed topics (recognized non-transfer intent), abandon wizard
+        if intent not in ("unknown", "bank_transfer"):
+            state["pending_action"] = None
+            # Fall through to normal intent handling below
 
-        if amt is None:
-            trace = make_trace(
-                decision="Continue transfer workflow",
-                reason="Wizard awaiting amount",
-                agent="Financial Services Agent",
-                capability="Transfers",
-                result="Asked user for amount",
-                confidence="medium",
-            )
-            return {
-                "session_id": req.session_id,
-                "messages": [{"role": "assistant", "content": "How much would you like to transfer?"}],
-                "card": card_transfer_ask_amount(pending["from_account"], pending["to_account"]),
-                "debug": {
-                    "intent": "bank_transfer",
-                    "entities": {},
-                    "policy": {"allow": True, "risk": "medium", "reason": "Needs amount"},
-                    "agent_trace": trace,
-                    "ts": now_ts(),
-                },
+        else:
+            amt = parse_amount(text)
+
+            if amt is None:
+                trace = make_trace(
+                    decision="Continue transfer workflow",
+                    reason="Wizard awaiting amount",
+                    agent="Financial Services Agent",
+                    capability="Transfers",
+                    result="Asked user for amount",
+                    confidence="medium",
+                )
+                return {
+                    "session_id": req.session_id,
+                    "messages": [{"role": "assistant", "content": "How much would you like to transfer?"}],
+                    "card": card_transfer_ask_amount(pending["from_account"], pending["to_account"]),
+                    "debug": {
+                        "intent": "bank_transfer",
+                        "entities": {},
+                        "policy": {"allow": True, "risk": "medium", "reason": "Needs amount"},
+                        "agent_trace": trace,
+                        "ts": now_ts(),
+                    },
+                }
+
+            entities = {"amount": float(amt), "from_account": pending["from_account"], "to_account": pending["to_account"]}
+            policy = policy_check("bank_transfer", entities, state)
+
+            if not policy["allow"]:
+                state["pending_action"] = None
+                trace = make_trace(
+                    decision="Block transfer before confirmation",
+                    reason=policy["reason"],
+                    agent="Policy Engine",
+                    capability="Policy check",
+                    result="Blocked unsafe transfer",
+                    confidence="high",
+                )
+                return {
+                    "session_id": req.session_id,
+                    "messages": [{"role": "assistant", "content": f"{policy['reason']}"}],
+                    "card": {"title": "Transfer blocked", "subtitle": "Policy check", "body": policy["reason"], "actions": []},
+                    "debug": {
+                        "intent": "bank_transfer",
+                        "entities": entities,
+                        "policy": policy,
+                        "agent_trace": trace,
+                        "ts": now_ts(),
+                    },
+                }
+
+            action_id = str(uuid.uuid4())
+            state["pending_action"] = {
+                "id": action_id,
+                "type": "transfer",
+                "stage": "awaiting_confirm",
+                "from_account": pending["from_account"],
+                "to_account": pending["to_account"],
+                "amount": float(amt),
             }
 
-        entities = {"amount": float(amt), "from_account": pending["from_account"], "to_account": pending["to_account"]}
-        policy = policy_check("bank_transfer", entities, state)
-
-        if not policy["allow"]:
-            state["pending_action"] = None
             trace = make_trace(
-                decision="Block transfer before confirmation",
-                reason=policy["reason"],
-                agent="Policy Engine",
-                capability="Policy check",
-                result="Blocked unsafe transfer",
+                decision="Require confirmation for transfer",
+                reason="High-sensitivity action",
+                agent="Financial Services Agent",
+                capability="Transfers",
+                result="Returned confirmation card",
                 confidence="high",
             )
             return {
                 "session_id": req.session_id,
-                "messages": [{"role": "assistant", "content": f"{policy['reason']}"}],
-                "card": {"title": "Transfer blocked", "subtitle": "Policy check", "body": policy["reason"], "actions": []},
+                "messages": [{"role": "assistant", "content": "For your safety, please confirm this transfer."}],
+                "card": card_transfer_confirm(pending["from_account"], pending["to_account"], float(amt), action_id),
                 "debug": {
                     "intent": "bank_transfer",
                     "entities": entities,
@@ -364,37 +417,6 @@ def orchestrate(req: OrchestrateRequest):
                     "ts": now_ts(),
                 },
             }
-
-        action_id = str(uuid.uuid4())
-        state["pending_action"] = {
-            "id": action_id,
-            "type": "transfer",
-            "stage": "awaiting_confirm",
-            "from_account": pending["from_account"],
-            "to_account": pending["to_account"],
-            "amount": float(amt),
-        }
-
-        trace = make_trace(
-            decision="Require confirmation for transfer",
-            reason="High-sensitivity action",
-            agent="Financial Services Agent",
-            capability="Transfers",
-            result="Returned confirmation card",
-            confidence="high",
-        )
-        return {
-            "session_id": req.session_id,
-            "messages": [{"role": "assistant", "content": "For your safety, please confirm this transfer."}],
-            "card": card_transfer_confirm(pending["from_account"], pending["to_account"], float(amt), action_id),
-            "debug": {
-                "intent": "bank_transfer",
-                "entities": entities,
-                "policy": policy,
-                "agent_trace": trace,
-                "ts": now_ts(),
-            },
-        }
 
     # -----------------------------
     # Insights

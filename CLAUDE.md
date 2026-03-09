@@ -52,14 +52,38 @@ Intent is resolved via keyword matching in `route_intent()`. Supported intents:
 Multi-step stateful flow: direction → amount → policy check → confirmation → execute.
 State stored in `_DEMO_STATE[session_id]["pending_action"]`.
 
+**Intent-first escape hatch:** If the user types a recognized non-transfer intent while
+the wizard is awaiting an amount (e.g. "account summary"), the pending transfer is
+silently abandoned and the new intent is handled normally. This prevents the wizard
+from trapping users who change their mind.
+
 ## Policy Engine
 `policy_check()` gates transfers: validates amount > 0, < $5000, sufficient funds.
+
+## Insights Feed
+`INSIGHTS` list drives the proactive insights UI. Each insight includes:
+- `id`, `title`, `subtitle` — display fields
+- `metric` — bold callout (e.g. "+18% vs last month", "$30.47 due this week")
+- `category` — drives UI color coding: `spend` (amber), `assets` (yellow), `travel` (sky), `recurring` (gray)
+- `priority` — `high`, `medium`, `low`
+- `is_new` — shows a "New" badge in the UI
+
+## Agent Trace Names
+Traces use professional names for the MD demo:
+- `Financial Services Agent` — banking intents (transfers, balances, spend, recurring)
+- `Asset Management Agent` — CD maturity, asset management
+- `Travel Services Agent` — upcoming travel
+- `Client Services Agent` — human agent handoff
+- `Insights Agent` — insight detail views
+- `Policy Engine` — transfer policy gating
+- `Planner` — fallback/routing
 
 ## Conventions
 - All API responses include a `debug` payload with `agent_trace` (Planner/Delegate/Act)
 - Card responses follow: `{ title, subtitle, body, actions[] }`
 - No real banking actions — all data is hardcoded demo data
 - CORS allows localhost:3000/3001 and Vercel deployment
+- No "(demo)" text in any API response — UI should not need to strip it
 
 ## Running Locally
 ```bash
@@ -71,3 +95,8 @@ uvicorn main:app --reload --port 8000
 - Repo: compass-ui (Next.js 16 / React 19 / Tailwind 4)
 - Deployed: https://compass-ui-blush.vercel.app/
 - Env var: `NEXT_PUBLIC_API_BASE` (defaults to http://127.0.0.1:8000)
+
+## Changelog
+- **v1.1** — Enriched insights with metric/category/priority/is_new fields; intent-first
+  escape hatch for transfer wizard; professional agent trace names; bare except cleanup
+- **v1.0** — Initial orchestrator with transfer wizard, insights, travel, CD, handoff
