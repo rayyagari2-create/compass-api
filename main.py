@@ -77,7 +77,7 @@ def parse_amount(text: str) -> Optional[float]:
     raw = m.group(1).replace("$", "").replace(",", "").strip()
     try:
         return float(raw)
-    except:
+    except ValueError:
         return None
 
 def parse_direction(text: str) -> Tuple[Optional[str], Optional[str]]:
@@ -158,7 +158,7 @@ def policy_check(intent: str, entities: Dict[str, Any], state: Dict[str, Any]) -
 
     try:
         amount = float(amount)
-    except:
+    except (ValueError, TypeError):
         return {"allow": False, "risk": "low", "reason": "Invalid transfer amount."}
 
     if amount <= 0:
@@ -321,7 +321,7 @@ def orchestrate(req: OrchestrateRequest):
             trace = make_trace(
                 decision="Continue transfer workflow",
                 reason="Wizard awaiting amount",
-                agent="BankingAgent",
+                agent="Financial Services Agent",
                 capability="Transfers",
                 result="Asked user for amount",
                 confidence="medium",
@@ -347,7 +347,7 @@ def orchestrate(req: OrchestrateRequest):
             trace = make_trace(
                 decision="Block transfer before confirmation",
                 reason=policy["reason"],
-                agent="PIP",
+                agent="Policy Engine",
                 capability="Policy check",
                 result="Blocked unsafe transfer",
                 confidence="high",
@@ -378,7 +378,7 @@ def orchestrate(req: OrchestrateRequest):
         trace = make_trace(
             decision="Require confirmation for transfer",
             reason="High-sensitivity action",
-            agent="BankingAgent",
+            agent="Financial Services Agent",
             capability="Transfers",
             result="Returned confirmation card",
             confidence="high",
@@ -403,7 +403,7 @@ def orchestrate(req: OrchestrateRequest):
         trace = make_trace(
             decision="Surface proactive insights",
             reason="User requested insights",
-            agent="BankingAgent",
+            agent="Financial Services Agent",
             capability="Insights",
             result="Returned insight list",
             confidence="high",
@@ -434,7 +434,7 @@ def orchestrate(req: OrchestrateRequest):
         trace = make_trace(
             decision="Notify CD maturity timeline",
             reason="User asked about CD maturity",
-            agent="AssetsAgent",
+            agent="Asset Management Agent",
             capability="CD alerts",
             result="Returned Manage CD card",
             confidence="high",
@@ -468,7 +468,7 @@ def orchestrate(req: OrchestrateRequest):
         trace = make_trace(
             decision="Show upcoming trip summary",
             reason="User requested travel details",
-            agent="TravelAgent",
+            agent="Travel Services Agent",
             capability="Upcoming travel",
             result="Returned Travel card",
             confidence="high",
@@ -508,16 +508,16 @@ def orchestrate(req: OrchestrateRequest):
     if intent == "agent_handoff":
         agent_notes = (
             "Agent Notes:\n"
-            f"- User: {req.user_id}\n"
+            f"- Client: {req.user_id}\n"
             f"- Request: {text}\n"
+            f"- Session: {req.session_id}\n"
             "- Suggested next step: verify identity + confirm issue category\n"
-            "- Context: demo environment, no real transactions\n"
         )
 
         trace = make_trace(
             decision="Initiate human handoff",
             reason="User asked for an agent",
-            agent="HandoffAgent",
+            agent="Client Services Agent",
             capability="Agent handoff",
             result="Prepared handoff package + asked for confirmation",
             confidence="high",
@@ -551,7 +551,7 @@ def orchestrate(req: OrchestrateRequest):
         trace = make_trace(
             decision="Show recurring charges",
             reason="User asked for subscriptions/recurring",
-            agent="BankingAgent",
+            agent="Financial Services Agent",
             capability="Recurring charges",
             result="Returned subscriptions list",
             confidence="high",
@@ -586,7 +586,7 @@ def orchestrate(req: OrchestrateRequest):
         trace = make_trace(
             decision="Show balances",
             reason="User asked for account summary",
-            agent="BankingAgent",
+            agent="Financial Services Agent",
             capability="Balances",
             result="Returned balances card",
             confidence="high",
@@ -631,7 +631,7 @@ def orchestrate(req: OrchestrateRequest):
         trace = make_trace(
             decision="Generate spend insights",
             reason="User asked for spend analysis",
-            agent="BankingAgent",
+            agent="Financial Services Agent",
             capability="Spend analysis",
             result="Returned spend summary + charts payload",
             confidence="high",
@@ -676,7 +676,7 @@ def orchestrate(req: OrchestrateRequest):
             trace = make_trace(
                 decision="Start transfer workflow",
                 reason="Transfer requested without direction/amount",
-                agent="BankingAgent",
+                agent="Financial Services Agent",
                 capability="Transfers",
                 result="Asked user to choose direction",
                 confidence="medium",
@@ -700,7 +700,7 @@ def orchestrate(req: OrchestrateRequest):
             trace = make_trace(
                 decision="Collect transfer direction",
                 reason="Amount provided, direction missing",
-                agent="BankingAgent",
+                agent="Financial Services Agent",
                 capability="Transfers",
                 result="Asked user to choose direction (kept amount as hint)",
                 confidence="medium",
@@ -724,7 +724,7 @@ def orchestrate(req: OrchestrateRequest):
             trace = make_trace(
                 decision="Collect transfer amount",
                 reason="Direction provided, amount missing",
-                agent="BankingAgent",
+                agent="Financial Services Agent",
                 capability="Transfers",
                 result="Asked user for amount",
                 confidence="medium",
@@ -751,7 +751,7 @@ def orchestrate(req: OrchestrateRequest):
             trace = make_trace(
                 decision="Block transfer before confirmation",
                 reason=policy["reason"],
-                agent="PIP",
+                agent="Policy Engine",
                 capability="Policy check",
                 result="Blocked unsafe transfer",
                 confidence="high",
@@ -782,7 +782,7 @@ def orchestrate(req: OrchestrateRequest):
         trace = make_trace(
             decision="Require confirmation for transfer",
             reason="High-sensitivity action",
-            agent="BankingAgent",
+            agent="Financial Services Agent",
             capability="Transfers",
             result="Returned confirmation card",
             confidence="high",
@@ -862,7 +862,7 @@ def action(req: ActionRequest):
             trace = make_trace(
                 decision="Open Spend Path insight",
                 reason="User tapped VIEW",
-                agent="InsightsAgent",
+                agent="Insights Agent",
                 capability="Spend analysis",
                 result="Returned Spend Analysis card + charts",
                 confidence="high",
@@ -890,7 +890,7 @@ def action(req: ActionRequest):
             trace = make_trace(
                 decision="Open Upcoming CD maturity insight",
                 reason="User tapped VIEW",
-                agent="InsightsAgent",
+                agent="Insights Agent",
                 capability="CD alerts",
                 result="Returned Manage CD card",
                 confidence="high",
@@ -915,7 +915,7 @@ def action(req: ActionRequest):
             trace = make_trace(
                 decision="Open Travel insight",
                 reason="User tapped VIEW",
-                agent="InsightsAgent",
+                agent="Insights Agent",
                 capability="Travel",
                 result="Returned Travel card",
                 confidence="high",
@@ -948,7 +948,7 @@ def action(req: ActionRequest):
         trace = make_trace(
             decision="Open selected insight",
             reason=f"User tapped VIEW for {iid}",
-            agent="InsightsAgent",
+            agent="Insights Agent",
             capability="Insight detail",
             result="Returned insight detail card",
             confidence="high",
@@ -974,7 +974,7 @@ def action(req: ActionRequest):
         if pending and pending.get("type") == "transfer" and pending.get("amount_hint") is not None:
             try:
                 amount_hint = float(pending.get("amount_hint"))
-            except:
+            except (ValueError, TypeError):
                 amount_hint = None
 
         state["pending_action"] = {"type": "transfer", "stage": "awaiting_amount", "from_account": from_acct, "to_account": to_acct}
